@@ -15,18 +15,21 @@
  */
 package com.jakewharton.processphoenix;
 
+import static android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK;
+import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
+import static android.content.pm.PackageManager.FEATURE_LEANBACK;
+
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Bundle;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Process;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-
-import static android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK;
-import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
 
 /**
  * Process Phoenix facilitates restarting your application process. This should only be used for
@@ -35,9 +38,10 @@ import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
  * <p>
  * Trigger process recreation by calling {@link #triggerRebirth} with a {@link Context} instance.
  */
-public final class ProcessPhoenix extends Activity {
-  private static final String KEY_RESTART_INTENTS = "phoenix_restart_intents";
-  private static final String KEY_MAIN_PROCESS_PID = "phoenix_main_process_pid";
+public final class ProcessPhoenix {
+  static final String KEY_RESTART_INTENT = "phoenix_restart_intent";
+  static final String KEY_RESTART_INTENTS = "phoenix_restart_intents";
+  static final String KEY_MAIN_PROCESS_PID = "phoenix_main_process_pid";
 
   /**
    * Call to restart the application process using the {@linkplain Intent#CATEGORY_DEFAULT default}
@@ -47,6 +51,16 @@ public final class ProcessPhoenix extends Activity {
    */
   public static void triggerRebirth(Context context) {
     triggerRebirth(context, getRestartIntent(context));
+  }
+
+  /**
+   * Call to restart the application process using the provided Activity Class.
+   * <p>
+   * Behavior of the current process after invoking this method is undefined.
+   */
+  public static void triggerRebirth(Context context, Class<? extends Activity> targetClass) {
+    Intent nextIntent = new Intent(context, targetClass);
+    triggerRebirth(context, nextIntent);
   }
 
   /**
@@ -61,34 +75,56 @@ public final class ProcessPhoenix extends Activity {
     // create a new task for the first activity.
     nextIntents[0].addFlags(FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK);
 
-    Intent intent = new Intent(context, ProcessPhoenix.class);
+    Intent intent = new Intent(context, PhoenixActivity.class);
     intent.addFlags(FLAG_ACTIVITY_NEW_TASK); // In case we are called with non-Activity context.
-    intent.putParcelableArrayListExtra(KEY_RESTART_INTENTS, new ArrayList<>(Arrays.asList(nextIntents)));
+    intent.putParcelableArrayListExtra(
+        KEY_RESTART_INTENTS, new ArrayList<>(Arrays.asList(nextIntents)));
     intent.putExtra(KEY_MAIN_PROCESS_PID, Process.myPid());
     context.startActivity(intent);
   }
 
+  /**
+   * Call to restart the application process using the provided Service Class.
+   * <p>
+   * Behavior of the current process after invoking this method is undefined.
+   */
+  public static void triggerServiceRebirth(Context context, Class<? extends Service> targetClass) {
+    Intent nextIntent = new Intent(context, targetClass);
+    triggerServiceRebirth(context, nextIntent);
+  }
+
+  /**
+   * Call to restart the application process using the specified Service intent.
+   * <p>
+   * Behavior of the current process after invoking this method is undefined.
+   */
+  public static void triggerServiceRebirth(Context context, Intent nextIntent) {
+    Intent intent = new Intent(context, PhoenixService.class);
+    intent.putExtra(KEY_RESTART_INTENT, nextIntent);
+    intent.putExtra(KEY_MAIN_PROCESS_PID, Process.myPid());
+    context.startService(intent);
+  }
+
   private static Intent getRestartIntent(Context context) {
     String packageName = context.getPackageName();
-    Intent defaultIntent = context.getPackageManager().getLaunchIntentForPackage(packageName);
+
+    Intent defaultIntent = null;
+    PackageManager packageManager = context.getPackageManager();
+    if (Build.VERSION.SDK_INT >= 21 && packageManager.hasSystemFeature(FEATURE_LEANBACK)) {
+      // Use leanback intent if available, for Android TV apps.
+      defaultIntent = packageManager.getLeanbackLaunchIntentForPackage(packageName);
+    }
+    if (defaultIntent == null) {
+      defaultIntent = packageManager.getLaunchIntentForPackage(packageName);
+    }
     if (defaultIntent != null) {
       return defaultIntent;
     }
 
-    throw new IllegalStateException("Unable to determine default activity for "
-        + packageName
-        + ". Does an activity specify the DEFAULT category in its intent filter?");
-  }
-
-  @Override protected void onCreate(Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-
-    Process.killProcess(getIntent().getIntExtra(KEY_MAIN_PROCESS_PID, -1)); // Kill original main process
-
-    ArrayList<Intent> intents = getIntent().getParcelableArrayListExtra(KEY_RESTART_INTENTS);
-    startActivities(intents.toArray(new Intent[intents.size()]));
-    finish();
-    Runtime.getRuntime().exit(0); // Kill kill kill!
+    throw new IllegalStateException(
+        "Unable to determine default activity for "
+            + packageName
+            + ". Does an activity specify the DEFAULT category in its intent filter?");
   }
 
   /**
